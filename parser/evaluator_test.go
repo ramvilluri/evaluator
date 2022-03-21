@@ -21,6 +21,7 @@ func TestEvaluate(t *testing.T) {
 		{"exp10", "(a&b) & (b|e) & (a|b)", false},
 		{"exp11", "b", false},
 		{"exp12", "c", true},
+		{"exp12", "a|b&c", true},
 	}
 
 	for _, tc := range tt {

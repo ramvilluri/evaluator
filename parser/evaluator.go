@@ -7,12 +7,10 @@ import (
 	"go/parser"
 	"go/token"
 	"strings"
-	"sync"
 )
 
 type OpertorStack struct {
-	dll   *list.List
-	mutex sync.Mutex
+	dll *list.List
 }
 
 type Result struct {
@@ -20,21 +18,20 @@ type Result struct {
 	isAllIntegrtedIdsExists bool
 }
 
+type Operand struct {
+	oper  *ast.Ident
+	depth int
+}
+
 func NewStack() *OpertorStack {
-	return &OpertorStack{mutex: sync.Mutex{}, dll: list.New()}
+	return &OpertorStack{dll: list.New()}
 }
 
 func (s *OpertorStack) Push(x interface{}) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
 	s.dll.PushBack(x)
 }
 
 func (s *OpertorStack) Pop() interface{} {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
 	if s.dll.Len() == 0 {
 		return nil
 	}
@@ -53,34 +50,41 @@ func Evaluate(expr string) bool {
 		fmt.Errorf("Failed to parse the expression : %v", e)
 	}
 	b := &Result{false, false}
-	v := &visitor{operStack: NewStack(), tree_height: 0, childStack: NewStack(), resultStack: NewStack(), containsAllIds: b}
+	// v := &visitor{operStack: NewStack(), tree_height: 0, childStack: NewStack(), resultStack: NewStack(), result: b}
+	v := &visitor{operStack: NewStack(), tree_height: 0, childStackMap: make(map[int]*OpertorStack), resultStackMap: make(map[int]*OpertorStack), result: b}
 	ast.Walk(v, e)
+
+	if v.operStack.dll.Len() != 0 {
+		operands := []*ast.Ident{}
+		for k := range v.resultStackMap {
+			for op := v.resultStackMap[k].dll.Front(); op != nil; op = op.Next() {
+				operands = append(operands, op.Value.(*Operand).oper)
+			}
+		}
+
+		if len(v.childStackMap) != 0 {
+			for k := range v.childStackMap {
+				for op := v.childStackMap[k].dll.Front(); op != nil; op = op.Next() {
+					operands = append(operands, op.Value.(*ast.Ident))
+				}
+			}
+		}
+
+		evaluaeExpression(v, operands[0], operands[1])
+	}
 	// fmt.Printf("all id :%v \n", v.containsAllIds.isAllIntegrtedIdsExists)
 	// fmt.Printf("res id :%v \n", v.containsAllIds.shouldAppend)
-	return (v.containsAllIds.shouldAppend || !v.containsAllIds.isAllIntegrtedIdsExists)
+	return (v.result.shouldAppend || !v.result.isAllIntegrtedIdsExists)
 }
 
-// func printOperators(opStack *OpertorStack) {
-// 	for opStack.dll.Len() > 0 {
-// 		x := opStack.Pop().(*ast.BinaryExpr)
-// 		// fmt.Printf("op : %v  left : %v   right : %v \n", x.Op, x.X, x.Y)
-// 		fmt.Printf("op %v", x.Op)
-
-// 	}
-// }
-
-// func printChildren(opStack *OpertorStack) {
-// 	for opStack.dll.Len() > 0 {
-// 		fmt.Printf("c :%v \n", opStack.Pop().(*ast.Ident).Name)
-// 	}
-// }
-
 type visitor struct {
-	operStack      *OpertorStack
-	tree_height    int
-	childStack     *OpertorStack
-	resultStack    *OpertorStack
-	containsAllIds *Result
+	operStack   *OpertorStack
+	tree_height int
+	// childStack     *OpertorStack
+	// resultStack    *OpertorStack
+	result         *Result
+	childStackMap  map[int]*OpertorStack
+	resultStackMap map[int]*OpertorStack
 }
 
 func (V visitor) Visit(n ast.Node) ast.Visitor {
@@ -92,23 +96,25 @@ func (V visitor) Visit(n ast.Node) ast.Visitor {
 	case *ast.Ident:
 		{
 			fmt.Printf("%s%s : %d\n", strings.Repeat("\t", V.tree_height), x.Name, V.tree_height)
-			if V.childStack.dll.Len() == 1 {
+			chStack := getStack(V.childStackMap, V.tree_height)
+			if chStack.dll.Len() == 1 {
 
-				leftChild := V.childStack.Pop().(*ast.Ident)
+				leftChild := chStack.Pop().(*ast.Ident)
 				rightChild := x
-
+				delete(V.childStackMap, V.tree_height)
 				evaluaeExpression(&V, leftChild, rightChild)
-
-				if V.resultStack.dll.Len() == 2 {
-					leftChild = V.resultStack.Pop().(*ast.Ident)
-					rightChild = V.resultStack.Pop().(*ast.Ident)
+				resStack := getStack(V.resultStackMap, V.tree_height)
+				if resStack.dll.Len() == 2 {
+					leftChild = resStack.Pop().(*Operand).oper
+					rightChild = resStack.Pop().(*Operand).oper
+					delete(V.resultStackMap, V.tree_height)
 					evaluaeExpression(&V, leftChild, rightChild)
 				}
 			} else {
-				V.childStack.Push(x)
+				chStack.Push(x)
 			}
-			if !V.containsAllIds.isAllIntegrtedIdsExists {
-				V.containsAllIds.isAllIntegrtedIdsExists = isAllIntegrtedIds(x.Name)
+			if !V.result.isAllIntegrtedIdsExists {
+				V.result.isAllIntegrtedIdsExists = isAllIntegrtedIds(x.Name)
 			}
 		}
 	case *ast.BinaryExpr:
@@ -121,11 +127,19 @@ func (V visitor) Visit(n ast.Node) ast.Visitor {
 	return &V
 }
 
+func getStack(stackMap map[int]*OpertorStack, depth int) *OpertorStack {
+	if stackMap[depth] == nil {
+		stackMap[depth] = NewStack()
+	}
+	return stackMap[depth]
+}
+
 func evaluaeExpression(V *visitor, leftChild *ast.Ident, rightChild *ast.Ident) {
 	operator := V.operStack.Pop().(*ast.BinaryExpr)
-	// fmt.Printf("evalating %v %v %v \n", leftChild.Name, operator.Op, rightChild.Name)
+	resStack := getStack(V.resultStackMap, V.tree_height-1)
+	fmt.Printf("evaluating %v %v %v \n", leftChild.Name, operator.Op, rightChild.Name)
 	if isAllIntegrtedIds(rightChild.Name) && isAllIntegrtedIds(leftChild.Name) {
-		V.containsAllIds.shouldAppend = false
+		V.result.shouldAppend = false
 	}
 	if isAllIntegrtedIds(rightChild.Name) || isAllIntegrtedIds(leftChild.Name) {
 		var allItgChild *ast.Ident
@@ -139,15 +153,15 @@ func evaluaeExpression(V *visitor, leftChild *ast.Ident, rightChild *ast.Ident) 
 			allItgChild = leftChild
 		}
 		if operator.Op != token.AND {
-			V.containsAllIds.shouldAppend = true
-			V.resultStack.Push(nonAllItgChild)
+			V.result.shouldAppend = true
+			resStack.Push(&Operand{oper: nonAllItgChild, depth: V.tree_height})
 		} else {
-			V.resultStack.Push(allItgChild)
-			V.containsAllIds.shouldAppend = false
+			resStack.Push(&Operand{oper: allItgChild, depth: V.tree_height})
+			V.result.shouldAppend = false
 		}
 
 	} else {
-		V.resultStack.Push(rightChild)
+		resStack.Push(&Operand{oper: rightChild, depth: V.tree_height})
 	}
 }
 
